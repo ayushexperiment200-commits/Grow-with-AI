@@ -40,7 +40,11 @@ export const generateHeaderImage = async (prompt: string): Promise<string> => {
   });
   if (!res.ok) throw new Error('Failed to generate header image');
   const data = await res.json();
-  return data.imageBase64 as string;
+  // If server returns PNG bytes, data:image prefix will be added by caller.
+  // If server returns SVG, caller can still use the same prefix with correct mime.
+  const mime: string = data.mimeType || 'image/png';
+  const base64: string = data.imageBase64 as string;
+  return `data:${mime};base64,${base64}`;
 };
 
 export const refineNewsletter = async (
