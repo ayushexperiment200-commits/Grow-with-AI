@@ -159,20 +159,56 @@ app.post('/api/image', async (req, res) => {
     const { prompt } = req.body as { prompt: string };
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt required' });
 
+    // Try Imagen API first if available
     if (genai) {
-      const response = await genai.models.generateImages({
-        model: 'imagen-4.0-generate-001',
-        prompt,
-        config: { numberOfImages: 1, outputMimeType: 'image/png', aspectRatio: '16:9' },
-      });
+      try {
+        const response = await genai.models.generateImages({
+          model: 'imagen-4.0-generate-001',
+          prompt,
+          config: { numberOfImages: 1, outputMimeType: 'image/png', aspectRatio: '16:9' },
+        });
 
-      if (!response.generatedImages || response.generatedImages.length === 0) throw new Error('No image');
-      const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
-      return res.json({ imageBase64: base64ImageBytes, mimeType: 'image/png' });
+        if (response.generatedImages && response.generatedImages.length > 0) {
+          const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
+          return res.json({ imageBase64: base64ImageBytes, mimeType: 'image/png' });
+        }
+      } catch (imagenError) {
+        console.warn('[/api/image] Imagen API failed, falling back to SVG:', imagenError.message || imagenError);
+        // Continue to fallback SVG generation
+      }
     }
 
-    const title = (prompt || 'Newsletter').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 140);
-    const svg = `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0ea5e9"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient></defs><rect width="1600" height="900" fill="url(#g)"/><g font-family="Verdana, DejaVu Sans, Arial" text-anchor="middle"><text x="800" y="470" font-size="72" fill="white" opacity="0.95">${title}</text></g></svg>`;
+    // Fallback to SVG generation
+    console.log('[/api/image] Using SVG fallback for prompt:', prompt);
+    const title = (prompt || 'Newsletter').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 100);
+    
+    // Create a more attractive gradient SVG with better styling
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="30%" stop-color="#3b82f6"/>
+      <stop offset="70%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1600" height="900" fill="url(#gradient)"/>
+  <circle cx="1400" cy="200" r="150" fill="rgba(255,255,255,0.1)"/>
+  <circle cx="200" cy="700" r="100" fill="rgba(255,255,255,0.05)"/>
+  <g font-family="'Segoe UI', Verdana, Arial, sans-serif" text-anchor="middle">
+    <text x="800" y="420" font-size="64" font-weight="bold" fill="white" filter="url(#glow)">${title}</text>
+    <text x="800" y="520" font-size="32" fill="rgba(255,255,255,0.9)">AI-Generated Newsletter</text>
+  </g>
+</svg>`;
+    
     const base64 = Buffer.from(svg, 'utf8').toString('base64');
     res.json({ imageBase64: base64, mimeType: 'image/svg+xml' });
   } catch (err) {
