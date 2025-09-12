@@ -80,8 +80,12 @@ const App: React.FC = () => {
       if (shouldGenerateImage) {
         setLoadingMessage('Generating header image...');
         const imagePrompt = customImagePrompt.trim() || `A professional and visually appealing header image for a newsletter from ${companyName} about "${topics.join(', ')}". The style should be: ${visualKeywords}. Abstract and suitable for a ${industry} audience. Avoid text.`;
-        const imageBase64 = await generateHeaderImage(imagePrompt);
-        setHeaderImageUrl(`data:image/png;base64,${imageBase64}`);
+        try {
+          const dataUrl = await generateHeaderImage(imagePrompt);
+          setHeaderImageUrl(dataUrl);
+        } catch (e) {
+          console.warn('Header image failed, continuing without image.');
+        }
       }
 
     } catch (err) {
