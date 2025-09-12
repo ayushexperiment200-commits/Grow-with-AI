@@ -1,6 +1,7 @@
 modules = ["nodejs-20", "web"]
 [agent]
 expertMode = true
+integrations = ["javascript_gemini:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
@@ -38,7 +39,7 @@ localPort = 5174
 externalPort = 3001
 
 [[ports]]
-localPort = 37485
+localPort = 37975
 externalPort = 3000
 
 [deployment]
