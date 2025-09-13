@@ -17,6 +17,10 @@ if (!apiKey) {
 
 const genai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
+// Initialize Imagen model separately for image generation
+const imagenModel = genai ? genai.getGenerativeModel({ model: 'imagen-3.0-generate-001' }) : null;
+const geminiModel = genai ? genai.getGenerativeModel({ model: 'gemini-2.0-flash-exp' }) : null;
+
 // Fallback utilities
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -60,8 +64,8 @@ async function fetchGoogleNewsRss(topics: string[], minArticles: number, freshne
   const seen = new Set<string>();
   const now = new Date();
   
-  // Progressive time windows: 1h -> 3h -> 12h -> no limit
-  const timeWindows = ['1h', '3h', '12h', ''];
+  // Progressive time windows: 30min -> 2h -> 6h -> 24h -> no limit
+  const timeWindows = ['30m', '2h', '6h', '24h', ''];
   
   for (const timeWindow of timeWindows) {
     if (results.length >= minArticles) break;
@@ -71,11 +75,14 @@ async function fetchGoogleNewsRss(topics: string[], minArticles: number, freshne
       const topicResults: typeof results = [];
       const q = encodeURIComponent(topic);
       const timeQuery = timeWindow ? ` when:${timeWindow}` : '';
-      const url = `https://news.google.com/rss/search?q=${q}${encodeURIComponent(timeQuery)}&hl=en-US&gl=US&ceid=US:en&num=20`;
+      const url = `https://news.google.com/rss/search?q=${q}${encodeURIComponent(timeQuery)}&hl=en-US&gl=US&ceid=US:en&num=30`;
       
       try {
         const r = await fetch(url, { 
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)' },
+          headers: { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml'
+          },
           signal: AbortSignal.timeout(8000)
         });
         if (!r.ok) return topicResults;
@@ -152,6 +159,41 @@ async function fetchGoogleNewsRss(topics: string[], minArticles: number, freshne
   }
   
   return finalResults;
+}
+
+// Enhanced news fetching with multiple sources
+async function fetchNewsFromMultipleSources(topics: string[], minArticles: number) {
+  console.log(`[fetchNewsFromMultipleSources] Fetching news for topics: ${topics.join(', ')}`);
+  
+  // Fetch from multiple sources in parallel
+  const [googleNews, gdeltNews] = await Promise.all([
+    fetchGoogleNewsRss(topics, minArticles, 120), // 2 hours freshness
+    fetchGdeltNews(topics, Math.ceil(minArticles / 2), 120)
+  ]);
+  
+  // Combine and deduplicate results
+  const allArticles = [...googleNews, ...gdeltNews];
+  const seen = new Set<string>();
+  const uniqueArticles = [];
+  
+  for (const article of allArticles) {
+    const linkKey = article.link.toLowerCase();
+    const titleKey = article.title.toLowerCase().replace(/[^\w\s]/g, '').trim();
+    
+    if (!seen.has(linkKey) && !seen.has(titleKey)) {
+      seen.add(linkKey);
+      seen.add(titleKey);
+      uniqueArticles.push(article);
+    }
+  }
+  
+  // Sort by publication time (newest first) and limit
+  uniqueArticles.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+  const finalArticles = uniqueArticles.slice(0, minArticles);
+  
+  console.log(`[fetchNewsFromMultipleSources] Returning ${finalArticles.length} articles (${googleNews.length} from Google News, ${gdeltNews.length} from GDELT)`);
+  
+  return finalArticles;
 }
 
 async function fetchGdeltNews(topics: string[], minArticles: number, freshnessMinutes: number = 180) {
@@ -255,58 +297,8 @@ app.post('/api/news', async (req, res) => {
     if (!Array.isArray(topics) || !topics.length) return res.status(400).json({ error: 'topics required' });
     const min = typeof minArticles === 'number' && minArticles > 0 ? minArticles : 5;
 
-    if (genai) {
-      try {
-        const prompt = `Find the most recent (within the last 48 hours), top trending news articles for the following topics: ${topics.join(', ')}.
-Focus on significant developments and announcements. For each article, find its title, a brief summary, the source website, and a direct link.
-Return at least ${min} diverse articles in total across all topics. Ensure the links are valid.
-Format the output as a valid JSON array of objects, where each object has keys: "title", "summary", "source", and "link".
-Do not include any introductory text, closing text, or markdown formatting like \`\`\`json. The entire response should be only the JSON array.`;
-
-        // Simplified approach: Use AI for general knowledge but validate with RSS
-        // Remove pseudo web search tool as it can't actually perform real-time searches
-        const response = await genai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: `Based on your knowledge, suggest ${min} recent and relevant news article topics related to: ${topics.join(', ')}. 
-Format as JSON array with objects containing "suggestedTitle" and "searchQuery" fields.
-Focus on realistic, trending topics that would likely appear in current news.`,
-        });
-
-        const rawText = response.text.trim();
-        console.log('[/api/news] AI suggested topics, falling back to validated RSS sources');
-        
-        // Always use RSS for actual news retrieval to ensure accuracy
-        // AI suggestions are only used internally for better search queries
-      } catch (e) {
-        console.warn('AI news failed, using RSS fallback. Error:', e.message || e);
-      }
-    }
-
-    // Fetch from multiple sources in parallel
-    const [googleNews, gdeltNews] = await Promise.all([
-      fetchGoogleNewsRss(topics, min, 180), // 3 hours freshness by default
-      fetchGdeltNews(topics, Math.ceil(min / 2), 180) // Get additional articles from GDELT
-    ]);
-    
-    // Combine and deduplicate results
-    const allArticles = [...googleNews, ...gdeltNews];
-    const seen = new Set<string>();
-    const uniqueArticles = [];
-    
-    for (const article of allArticles) {
-      const linkKey = article.link.toLowerCase();
-      const titleKey = article.title.toLowerCase().replace(/[^\w\s]/g, '').trim();
-      
-      if (!seen.has(linkKey) && !seen.has(titleKey)) {
-        seen.add(linkKey);
-        seen.add(titleKey);
-        uniqueArticles.push(article);
-      }
-    }
-    
-    // Sort by publication time (newest first) and limit
-    uniqueArticles.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
-    const finalArticles = uniqueArticles.slice(0, min);
+    // Fetch real-time news from multiple sources
+    const finalArticles = await fetchNewsFromMultipleSources(topics, min);
     
     if (!finalArticles.length) throw new Error('No articles available');
     
@@ -316,7 +308,7 @@ Focus on realistic, trending topics that would likely appear in current news.`,
       publishedAt: article.publishedAt.toISOString()
     }));
     
-    console.log(`[/api/news] Returning ${serializedArticles.length} articles (${googleNews.length} from Google News, ${gdeltNews.length} from GDELT)`);
+    console.log(`[/api/news] Successfully returning ${serializedArticles.length} articles`);
     
     res.json(serializedArticles);
   } catch (err) {
@@ -328,58 +320,401 @@ Focus on realistic, trending topics that would likely appear in current news.`,
 app.post('/api/newsletter', async (req, res) => {
   try {
     const { articles, options } = req.body as { articles: unknown; options: any };
+    
+    if (!Array.isArray(articles) || articles.length === 0) {
+      return res.status(400).json({ error: 'Articles array is required and cannot be empty' });
+    }
+    
     const { industry, companyName, tone, newsFormat, wordLength, additionalInstructions } = options || {};
-    const articlesJson = JSON.stringify(articles, null, 2);
-    const prompt = `
-You are an expert content creator for "${companyName}", a leading voice in the ${industry} sector.
-Your task is to generate a professional newsletter.
-The audience is savvy and expects high-quality, relevant information.
+    
+    const prompt = `You are an expert newsletter writer for "${companyName || 'TechNews'}", a leading voice in the ${industry || 'Technology'} sector.
+
+Create a professional, engaging newsletter based on the following real-time news articles. The newsletter should be well-structured, informative, and tailored to a professional audience.
 
 **Newsletter Specifications:**
-- **Company:** ${companyName}
-- **Industry:** ${industry}
-- **Tone:** ${tone}. The writing must reflect this tone consistently.
-- **News Format:** Each news summary should be a single ${newsFormat}.
-- **Summary Length:** Each summary should be approximately ${wordLength} words.
-- **Additional Instructions:** ${additionalInstructions || 'None'}
+- **Company:** ${companyName || 'TechNews'}
+- **Industry:** ${industry || 'Technology'}
+- **Tone:** ${tone || 'Professional'}
+- **Format:** ${newsFormat === 'bullets' ? 'Use bullet points for each news item' : 'Use paragraph format for each news item'}
+- **Length:** Each news summary should be approximately ${wordLength || 100} words
+- **Additional Instructions:** ${additionalInstructions || 'Focus on the most important and impactful news'}
 
 **Instructions:**
-1.  **Main Title:** Create a compelling title for the newsletter that reflects the key themes.
-2.  **Introduction:** Write a short, engaging introduction (2-3 sentences) that sets the stage.
-3.  **Article Sections:** For each article, create a section with:
-    - A clear, bolded heading (<h4>).
-    - A summary of the article, adhering to the specified format (paragraph/bullets) and length (~${wordLength} words).
-    - A "Read More" link (<a>) to the original article, using the source name as the link text.
-4.  **Closing:** Add a brief closing remark.
-5.  **Styling:** Generate clean, modern HTML. Do not use inline styles or <style> blocks. Use semantic tags like <h1>, <h2>, <p>, <h4>, <a>, <strong>, <em>, <ul>, <li>, and <hr>.
-6.  **Output:** Provide a single block of HTML code, starting with <h1>. Do not wrap it in markdown.
+1. Create a compelling newsletter title that reflects the key themes from the articles
+2. Write a brief, engaging introduction (2-3 sentences)
+3. For each article, create a section with:
+   - A clear, descriptive heading
+   - A well-written summary following the specified format and length
+   - Include the source and a link to read more
+4. Add a professional closing
+5. Use clean HTML with semantic tags (h1, h2, h3, p, strong, em, ul, li, a)
+6. Do not use inline styles or style blocks
+7. Return only the HTML content, no markdown formatting
 
-**News Articles Data:**
-${articlesJson}`;
+**News Articles to Include:**
+${JSON.stringify(articles, null, 2)}
 
-    if (genai) {
-      const response = await genai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-      const newsletterHtml = response.text;
-      if (!newsletterHtml) throw new Error('Empty newsletter');
-      return res.json({ html: newsletterHtml });
+Generate the newsletter now:`;
+
+    if (geminiModel) {
+      try {
+        console.log('[/api/newsletter] Generating newsletter with Gemini...');
+        const result = await geminiModel.generateContent(prompt);
+        const newsletterHtml = result.response.text();
+        
+        if (!newsletterHtml || newsletterHtml.trim().length < 100) {
+          throw new Error('Generated newsletter is too short or empty');
+        }
+        
+        console.log('[/api/newsletter] Successfully generated newsletter');
+        return res.json({ html: newsletterHtml });
+      } catch (error) {
+        console.error('[/api/newsletter] Gemini generation failed:', error);
+        // Fall through to fallback
+      }
     }
 
-    // Fallback deterministic HTML
-    const list = Array.isArray(articles) ? (articles as any[]) : [];
-    const sections = list.map((a) => {
-      const title = String(a.title || '').slice(0, 180);
-      const summary = String(a.summary || '').slice(0, 600);
-      const link = String(a.link || '#');
-      const source = String(a.source || 'Source');
-      return newsFormat === 'bullets'
-        ? `<section><h4>${title}</h4><ul><li>${summary}</li></ul><p><a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p></section>`
-        : `<section><h4>${title}</h4><p>${summary}</p><p><a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p></section>`;
+    // Enhanced fallback newsletter generation
+    console.log('[/api/newsletter] Using enhanced fallback generation');
+    const articlesList = Array.isArray(articles) ? articles : [];
+    
+    const newsletterSections = articlesList.map((article: any, index: number) => {
+      const title = String(article.title || `News Item ${index + 1}`).slice(0, 200);
+      const summary = String(article.summary || 'No summary available').slice(0, wordLength * 2);
+      const source = String(article.source || 'Unknown Source');
+      const link = String(article.link || '#');
+      
+      if (newsFormat === 'bullets') {
+        return `<section>
+  <h3>${title}</h3>
+  <ul>
+    <li>${summary}</li>
+  </ul>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      } else {
+        return `<section>
+  <h3>${title}</h3>
+  <p>${summary}</p>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      }
+    }).join('\n\n');
+
+    const fallbackHtml = `<h1>${companyName || 'TechNews'} Newsletter</h1>
+<h2>Latest ${industry || 'Technology'} Updates</h2>
+<p><em>Stay informed with the latest developments in ${industry || 'technology'}. Here are today's most important stories:</em></p>
+<hr/>
+
+${newsletterSections}
+
+<hr/>
+<p><em>Thank you for reading ${companyName || 'TechNews'} Newsletter. Stay tuned for more updates!</em></p>`;
+
+    res.json({ html: fallbackHtml });
+  } catch (err) {
+    console.error('[/api/newsletter] Error:', err);
+    res.status(500).json({ error: 'Failed to generate newsletter' });
+  }
+});
+
+app.post('/api/newsletter', async (req, res) => {
+  try {
+    const { articles, options } = req.body as { articles: unknown; options: any };
+    
+    if (!Array.isArray(articles) || articles.length === 0) {
+      return res.status(400).json({ error: 'Articles array is required and cannot be empty' });
+    }
+    
+    const { industry, companyName, tone, newsFormat, wordLength, additionalInstructions } = options || {};
+    
+    const prompt = `You are an expert newsletter writer for "${companyName || 'TechNews'}", a leading voice in the ${industry || 'Technology'} sector.
+
+Create a professional, engaging newsletter based on the following real-time news articles. The newsletter should be well-structured, informative, and tailored to a professional audience.
+
+**Newsletter Specifications:**
+- **Company:** ${companyName || 'TechNews'}
+- **Industry:** ${industry || 'Technology'}
+- **Tone:** ${tone || 'Professional'}
+- **Format:** ${newsFormat === 'bullets' ? 'Use bullet points for each news item' : 'Use paragraph format for each news item'}
+- **Length:** Each news summary should be approximately ${wordLength || 100} words
+- **Additional Instructions:** ${additionalInstructions || 'Focus on the most important and impactful news'}
+
+**Instructions:**
+1. Create a compelling newsletter title that reflects the key themes from the articles
+2. Write a brief, engaging introduction (2-3 sentences)
+3. For each article, create a section with:
+   - A clear, descriptive heading
+   - A well-written summary following the specified format and length
+   - Include the source and a link to read more
+4. Add a professional closing
+5. Use clean HTML with semantic tags (h1, h2, h3, p, strong, em, ul, li, a)
+6. Do not use inline styles or style blocks
+7. Return only the HTML content, no markdown formatting
+
+**News Articles to Include:**
+${JSON.stringify(articles, null, 2)}
+
+Generate the newsletter now:`;
+
+    if (geminiModel) {
+      try {
+        console.log('[/api/newsletter] Generating newsletter with Gemini...');
+        const result = await geminiModel.generateContent(prompt);
+        const newsletterHtml = result.response.text();
+        
+        if (!newsletterHtml || newsletterHtml.trim().length < 100) {
+          throw new Error('Generated newsletter is too short or empty');
+        }
+        
+        console.log('[/api/newsletter] Successfully generated newsletter');
+        return res.json({ html: newsletterHtml });
+      } catch (error) {
+        console.error('[/api/newsletter] Gemini generation failed:', error);
+        // Fall through to fallback
+      }
+    }
+
+    // Enhanced fallback newsletter generation
+    console.log('[/api/newsletter] Using enhanced fallback generation');
+    const articlesList = Array.isArray(articles) ? articles : [];
+    
+    const newsletterSections = articlesList.map((article: any, index: number) => {
+      const title = String(article.title || `News Item ${index + 1}`).slice(0, 200);
+      const summary = String(article.summary || 'No summary available').slice(0, wordLength * 2);
+      const source = String(article.source || 'Unknown Source');
+      const link = String(article.link || '#');
+      
+      if (newsFormat === 'bullets') {
+        return `<section>
+  <h3>${title}</h3>
+  <ul>
+    <li>${summary}</li>
+  </ul>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      } else {
+        return `<section>
+  <h3>${title}</h3>
+  <p>${summary}</p>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      }
+    }).join('\n\n');
+
+    const fallbackHtml = `<h1>${companyName || 'TechNews'} Newsletter</h1>
+<h2>Latest ${industry || 'Technology'} Updates</h2>
+<p><em>Stay informed with the latest developments in ${industry || 'technology'}. Here are today's most important stories:</em></p>
+<hr/>
+
+${newsletterSections}
+
+<hr/>
+<p><em>Thank you for reading ${companyName || 'TechNews'} Newsletter. Stay tuned for more updates!</em></p>`;
+
+    res.json({ html: fallbackHtml });
+  } catch (err) {
+    console.error('[/api/newsletter] Error:', err);
+    res.status(500).json({ error: 'Failed to generate newsletter' });
+  }
+});
+
+app.post('/api/newsletter', async (req, res) => {
+  try {
+    const { articles, options } = req.body as { articles: unknown; options: any };
+    
+    if (!Array.isArray(articles) || articles.length === 0) {
+      return res.status(400).json({ error: 'Articles array is required and cannot be empty' });
+    }
+    
+    const { industry, companyName, tone, newsFormat, wordLength, additionalInstructions } = options || {};
+    
+    const prompt = `You are an expert newsletter writer for "${companyName || 'TechNews'}", a leading voice in the ${industry || 'Technology'} sector.
+
+Create a professional, engaging newsletter based on the following real-time news articles. The newsletter should be well-structured, informative, and tailored to a professional audience.
+
+**Newsletter Specifications:**
+- **Company:** ${companyName || 'TechNews'}
+- **Industry:** ${industry || 'Technology'}
+- **Tone:** ${tone || 'Professional'}
+- **Format:** ${newsFormat === 'bullets' ? 'Use bullet points for each news item' : 'Use paragraph format for each news item'}
+- **Length:** Each news summary should be approximately ${wordLength || 100} words
+- **Additional Instructions:** ${additionalInstructions || 'Focus on the most important and impactful news'}
+
+**Instructions:**
+1. Create a compelling newsletter title that reflects the key themes from the articles
+2. Write a brief, engaging introduction (2-3 sentences)
+3. For each article, create a section with:
+   - A clear, descriptive heading
+   - A well-written summary following the specified format and length
+   - Include the source and a link to read more
+4. Add a professional closing
+5. Use clean HTML with semantic tags (h1, h2, h3, p, strong, em, ul, li, a)
+6. Do not use inline styles or style blocks
+7. Return only the HTML content, no markdown formatting
+
+**News Articles to Include:**
+${JSON.stringify(articles, null, 2)}
+
+Generate the newsletter now:`;
+
+    if (geminiModel) {
+      try {
+        console.log('[/api/newsletter] Generating newsletter with Gemini...');
+        const result = await geminiModel.generateContent(prompt);
+        const newsletterHtml = result.response.text();
+        
+        if (!newsletterHtml || newsletterHtml.trim().length < 100) {
+          throw new Error('Generated newsletter is too short or empty');
+        }
+        
+        console.log('[/api/newsletter] Successfully generated newsletter');
+        return res.json({ html: newsletterHtml });
+      } catch (error) {
+        console.error('[/api/newsletter] Gemini generation failed:', error);
+        // Fall through to fallback
+      }
+    }
+
+    // Enhanced fallback newsletter generation
+    console.log('[/api/newsletter] Using enhanced fallback generation');
+    const articlesList = Array.isArray(articles) ? articles : [];
+    
+    const newsletterSections = articlesList.map((article: any, index: number) => {
+      const title = String(article.title || `News Item ${index + 1}`).slice(0, 200);
+      const summary = String(article.summary || 'No summary available').slice(0, wordLength * 2);
+      const source = String(article.source || 'Unknown Source');
+      const link = String(article.link || '#');
+      
+      if (newsFormat === 'bullets') {
+        return `<section>
+  <h3>${title}</h3>
+  <ul>
+    <li>${summary}</li>
+  </ul>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      } else {
+        return `<section>
+  <h3>${title}</h3>
+  <p>${summary}</p>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      }
+    }).join('\n\n');
+
+    const fallbackHtml = `<h1>${companyName || 'TechNews'} Newsletter</h1>
+<h2>Latest ${industry || 'Technology'} Updates</h2>
+<p><em>Stay informed with the latest developments in ${industry || 'technology'}. Here are today's most important stories:</em></p>
+<hr/>
+
+${newsletterSections}
+
+<hr/>
+<p><em>Thank you for reading ${companyName || 'TechNews'} Newsletter. Stay tuned for more updates!</em></p>`;
+
+    res.json({ html: fallbackHtml });
+  } catch (err) {
+    console.error('[/api/newsletter] Error:', err);
+    res.status(500).json({ error: 'Failed to generate newsletter' });
+  }
+});
+
+app.post('/api/newsletter', async (req, res) => {
+  try {
+    const { articles, options } = req.body as { articles: unknown; options: any };
+    
+    if (!Array.isArray(articles) || articles.length === 0) {
+      return res.status(400).json({ error: 'Articles array is required and cannot be empty' });
+    }
+    
+    const { industry, companyName, tone, newsFormat, wordLength, additionalInstructions } = options || {};
+    
+    const prompt = `You are an expert newsletter writer for "${companyName || 'TechNews'}", a leading voice in the ${industry || 'Technology'} sector.
+
+Create a professional, engaging newsletter based on the following real-time news articles. The newsletter should be well-structured, informative, and tailored to a professional audience.
+
+**Newsletter Specifications:**
+- **Company:** ${companyName || 'TechNews'}
+- **Industry:** ${industry || 'Technology'}
+- **Tone:** ${tone || 'Professional'}
+- **Format:** ${newsFormat === 'bullets' ? 'Use bullet points for each news item' : 'Use paragraph format for each news item'}
+- **Length:** Each news summary should be approximately ${wordLength || 100} words
+- **Additional Instructions:** ${additionalInstructions || 'Focus on the most important and impactful news'}
+
+**Instructions:**
+1. Create a compelling newsletter title that reflects the key themes from the articles
+2. Write a brief, engaging introduction (2-3 sentences)
+3. For each article, create a section with:
+   - A clear, descriptive heading
+   - A well-written summary following the specified format and length
+   - Include the source and a link to read more
+4. Add a professional closing
+5. Use clean HTML with semantic tags (h1, h2, h3, p, strong, em, ul, li, a)
+6. Do not use inline styles or style blocks
+7. Return only the HTML content, no markdown formatting
+
+**News Articles to Include:**
+${JSON.stringify(articles, null, 2)}
+
+Generate the newsletter now:`;
+
+    if (geminiModel) {
+      try {
+        console.log('[/api/newsletter] Generating newsletter with Gemini...');
+        const result = await geminiModel.generateContent(prompt);
+        const newsletterHtml = result.response.text();
+        
+      if (!newsletterHtml) throw new Error('Empty newsletter');
+        
+        console.log('[/api/newsletter] Successfully generated newsletter');
+      return res.json({ html: newsletterHtml });
+      } catch (error) {
+        console.error('[/api/newsletter] Gemini generation failed:', error);
+        // Fall through to fallback
+      }
+    }
+
+    // Enhanced fallback newsletter generation
+    console.log('[/api/newsletter] Using enhanced fallback generation');
+    const articlesList = Array.isArray(articles) ? articles : [];
+    
+    const newsletterSections = articlesList.map((article: any, index: number) => {
+      const title = String(article.title || `News Item ${index + 1}`).slice(0, 200);
+      const summary = String(article.summary || 'No summary available').slice(0, wordLength * 2);
+      const source = String(article.source || 'Unknown Source');
+      const link = String(article.link || '#');
+      
+      if (newsFormat === 'bullets') {
+        return `<section>
+  <h3>${title}</h3>
+  <ul>
+    <li>${summary}</li>
+  </ul>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      } else {
+        return `<section>
+  <h3>${title}</h3>
+  <p>${summary}</p>
+  <p><strong>Source:</strong> <a href="${link}" target="_blank" rel="noopener noreferrer">${source}</a></p>
+</section>`;
+      }
     }).join('\n');
 
-    const html = `<h1>${companyName} Weekly</h1>\n<h2>${industry} Highlights</h2>\n<p><em>Tone: ${tone}. ${additionalInstructions || ''}</em></p>\n<hr/>${sections}`;
-    res.json({ html });
+    const fallbackHtml = `<h1>${companyName || 'TechNews'} Newsletter</h1>
+<h2>Latest ${industry || 'Technology'} Updates</h2>
+<p><em>Stay informed with the latest developments in ${industry || 'technology'}. Here are today's most important stories:</em></p>
+<hr/>
+
+${newsletterSections}
+
+<hr/>
+<p><em>Thank you for reading ${companyName || 'TechNews'} Newsletter. Stay tuned for more updates!</em></p>`;
+
+    res.json({ html: fallbackHtml });
   } catch (err) {
-    console.error('[/api/newsletter] error', err);
+    console.error('[/api/newsletter] Error:', err);
     res.status(500).json({ error: 'Failed to generate newsletter' });
   }
 });
@@ -389,18 +724,20 @@ app.post('/api/image', async (req, res) => {
     const { prompt } = req.body as { prompt: string };
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt required' });
 
-    // Use Google Imagen for image generation
-    if (genai) {
+    // Use Google Imagen 3.0 for image generation
+    if (imagenModel) {
       try {
-        const imagenResponse = await genai.models.generateImages({
-          model: 'imagen-3.0-generate-001',
+        console.log('[/api/image] Generating image with Imagen 3.0...');
+        const imagenResponse = await imagenModel.generateImages({
           prompt,
-          config: { numberOfImages: 1, outputMimeType: 'image/png', aspectRatio: '16:9' },
+          numberOfImages: 1,
+          outputMimeType: 'image/png',
+          aspectRatio: '16:9'
         });
 
         if (imagenResponse.generatedImages && imagenResponse.generatedImages.length > 0) {
           console.log('[/api/image] Successfully generated image with Imagen 3.0');
-          const base64ImageBytes: string = imagenResponse.generatedImages[0].image.imageBytes;
+          const base64ImageBytes = imagenResponse.generatedImages[0].image.imageBytes;
           return res.json({ imageBase64: base64ImageBytes, mimeType: 'image/png' });
         }
       } catch (imagenError) {
@@ -488,6 +825,7 @@ Now, generate the response based on the user's request, following their design s
     if (genai) {
       const response = await genai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
       const resultText = response.text.trim();
+      
       if (!resultText) throw new Error('Empty refinement');
       return res.json({ result: resultText });
     }
