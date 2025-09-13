@@ -154,6 +154,89 @@ async function fetchGoogleNewsRss(topics: string[], minArticles: number, freshne
   return finalResults;
 }
 
+async function fetchGdeltNews(topics: string[], minArticles: number, freshnessMinutes: number = 180) {
+  const results: { title: string; summary: string; source: string; link: string; publishedAt: Date }[] = [];
+  const now = new Date();
+  const startTime = new Date(now.getTime() - freshnessMinutes * 60 * 1000);
+  
+  // Format date for GDELT API (YYYYMMDDHHMMSS)
+  const formatGdeltDate = (date: Date) => {
+    return date.toISOString()
+      .replace(/[-T:.Z]/g, '')
+      .slice(0, 14);
+  };
+  
+  const startDateTime = formatGdeltDate(startTime);
+  const endDateTime = formatGdeltDate(now);
+  
+  for (const topic of topics) {
+    if (results.length >= minArticles) break;
+    
+    try {
+      const query = encodeURIComponent(topic);
+      const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${query}&mode=artlist&maxrecords=20&format=json&startdatetime=${startDateTime}&enddatetime=${endDateTime}&sort=DateTimeAsc`;
+      
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)' },
+        signal: AbortSignal.timeout(10000)
+      });
+      
+      if (!response.ok) continue;
+      
+      const data = await response.json();
+      
+      if (data.articles && Array.isArray(data.articles)) {
+        for (const article of data.articles) {
+          if (results.length >= minArticles) break;
+          
+          const title = article.title?.trim();
+          const url = article.url?.trim();
+          const domain = article.domain?.trim();
+          const seendt = article.seendt;
+          
+          if (!title || !url || !url.startsWith('http')) continue;
+          
+          // Parse GDELT date format (YYYYMMDDHHMMSS)
+          let publishedAt = new Date();
+          if (seendt) {
+            const year = parseInt(seendt.slice(0, 4));
+            const month = parseInt(seendt.slice(4, 6)) - 1; // JS months are 0-indexed
+            const day = parseInt(seendt.slice(6, 8));
+            const hour = parseInt(seendt.slice(8, 10));
+            const minute = parseInt(seendt.slice(10, 12));
+            const second = parseInt(seendt.slice(12, 14));
+            
+            publishedAt = new Date(year, month, day, hour, minute, second);
+            if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+          }
+          
+          // Check if already exists in results
+          if (results.some(r => r.link === url || r.title === title)) continue;
+          
+          // Generate summary from title (GDELT doesn't provide summaries)
+          const summary = `Latest news about ${topic} from ${domain || 'news source'}.`;
+          
+          results.push({
+            title,
+            summary,
+            source: domain || 'GDELT',
+            link: url,
+            publishedAt
+          });
+        }
+      }
+    } catch (error) {
+      console.warn(`[fetchGdeltNews] Failed to fetch for topic "${topic}":`, error);
+    }
+  }
+  
+  // Sort by publication time (newest first)
+  results.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+  
+  console.log(`[fetchGdeltNews] Found ${results.length} articles from GDELT`);
+  return results.slice(0, minArticles);
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, hasApiKey: Boolean(apiKey) });
 });
@@ -191,16 +274,43 @@ Focus on realistic, trending topics that would likely appear in current news.`,
       }
     }
 
-    const rss = await fetchGoogleNewsRss(topics, min, 180); // 3 hours freshness by default
-    if (!rss.length) throw new Error('No articles available');
+    // Fetch from multiple sources in parallel
+    const [googleNews, gdeltNews] = await Promise.all([
+      fetchGoogleNewsRss(topics, min, 180), // 3 hours freshness by default
+      fetchGdeltNews(topics, Math.ceil(min / 2), 180) // Get additional articles from GDELT
+    ]);
+    
+    // Combine and deduplicate results
+    const allArticles = [...googleNews, ...gdeltNews];
+    const seen = new Set<string>();
+    const uniqueArticles = [];
+    
+    for (const article of allArticles) {
+      const linkKey = article.link.toLowerCase();
+      const titleKey = article.title.toLowerCase().replace(/[^\w\s]/g, '').trim();
+      
+      if (!seen.has(linkKey) && !seen.has(titleKey)) {
+        seen.add(linkKey);
+        seen.add(titleKey);
+        uniqueArticles.push(article);
+      }
+    }
+    
+    // Sort by publication time (newest first) and limit
+    uniqueArticles.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+    const finalArticles = uniqueArticles.slice(0, min);
+    
+    if (!finalArticles.length) throw new Error('No articles available');
     
     // Convert Date objects to ISO strings for JSON serialization
-    const serializedRss = rss.map(article => ({
+    const serializedArticles = finalArticles.map(article => ({
       ...article,
       publishedAt: article.publishedAt.toISOString()
     }));
     
-    res.json(serializedRss);
+    console.log(`[/api/news] Returning ${serializedArticles.length} articles (${googleNews.length} from Google News, ${gdeltNews.length} from GDELT)`);
+    
+    res.json(serializedArticles);
   } catch (err) {
     console.error('[/api/news] error', err);
     res.status(500).json({ error: 'Failed to fetch news' });
