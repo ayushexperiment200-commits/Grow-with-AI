@@ -255,7 +255,7 @@ const App: React.FC = () => {
                   return (
                     <div key={index} className="bg-slate-800/50 p-4 rounded-lg border border-cyan-400/10 hover:border-cyan-400/30 transition-colors">
                       <div className="flex items-start justify-between mb-2">
-                        <h4 className="text-sm font-semibold text-cyan-300 line-clamp-2 flex-1 mr-4">
+                        <h4 className="text-sm font-semibold text-cyan-300 flex-1 mr-4" style={{display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>
                           {article.title}
                         </h4>
                         <div className="flex flex-col items-end text-right">
@@ -265,7 +265,7 @@ const App: React.FC = () => {
                           <span className="text-xs text-slate-400 mt-1">{article.source}</span>
                         </div>
                       </div>
-                      <p className="text-sm text-slate-300 mb-3 line-clamp-2">{article.summary}</p>
+                      <p className="text-sm text-slate-300 mb-3" style={{display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>{article.summary}</p>
                       <a 
                         href={article.link} 
                         target="_blank" 
