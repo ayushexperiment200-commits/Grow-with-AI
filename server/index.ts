@@ -183,6 +183,14 @@ async function fetchGdeltNews(topics: string[], minArticles: number, freshnessMi
       
       if (!response.ok) continue;
       
+      // Check content type before parsing as JSON
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const responseText = await response.text();
+        console.warn(`[fetchGdeltNews] Non-JSON response for topic "${topic}". Content-Type: ${contentType}. Response: ${responseText.slice(0, 200)}...`);
+        continue;
+      }
+      
       const data = await response.json();
       
       if (data.articles && Array.isArray(data.articles)) {
