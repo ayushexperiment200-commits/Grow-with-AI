@@ -314,15 +314,28 @@ ${JSON.stringify(articles, null, 2)}
 
 **Instructions:**
 1.  **Analyze the User Request:** Understand what the user wants to change. This could be content, style, structure, or even the header image.
-2.  **Handle Image Requests:** If the user asks for a new image (e.g., "change the image to be about space exploration"), you MUST ONLY respond with a JSON object of this exact format: {"requestType": "image", "newImagePrompt": "a detailed prompt for the new image based on the user request"}. Do not return any HTML or other text.
-3.  **Handle Research Requests:** If the user asks for more research or content on a topic, use your knowledge and the provided articles to expand on it. Modify the HTML directly.
-4.  **Handle HTML/Style Changes:** For any other request (changing text, headings, reordering sections), you must modify the provided HTML.
-    -   Return the FULL, complete, updated HTML for the newsletter body.
-5.  **Output Format:**
-    -   If it's an image request, output ONLY the JSON object described in step 2.
-    -   For all other requests, output ONLY the raw, updated HTML. Do not wrap it in markdown like \`\`\`html.
 
-Now, generate the response based on the user's request.`;
+2.  **Handle Image Requests:** If the user asks for a new image (e.g., "change the image to be about space exploration"), you MUST ONLY respond with a JSON object of this exact format: {"requestType": "image", "newImagePrompt": "a detailed prompt for the new image based on the user request"}. Do not return any HTML or other text.
+
+3.  **Handle Design/Style Requests:** When the user asks for design changes (colors, fonts, spacing, layout, styling), apply these changes using inline CSS styles. Pay close attention to:
+    - **Typography**: font-size, font-weight, font-family, text-align, text-decoration
+    - **Colors**: color, background-color (use professional color schemes)
+    - **Spacing**: margin, padding, line-height (ensure proper spacing)
+    - **Layout**: text-align, display properties, width settings
+    - **Visual hierarchy**: Use appropriate heading sizes (h1, h2, h3, h4)
+    - **Emphasis**: Use <strong>, <em>, or span with styling for highlights
+    
+4.  **Handle Content Requests:** If the user asks for more research or content on a topic, use your knowledge and the provided articles to expand on it. Modify the HTML directly while maintaining good styling.
+
+5.  **Handle Structure Changes:** For requests about reordering sections, changing headings, or reorganizing content, modify the HTML structure accordingly.
+
+6.  **Output Format:**
+    - If it's an image request, output ONLY the JSON object described in step 2.
+    - For all other requests, output ONLY the complete, updated HTML with proper inline styles applied.
+    - Do not wrap the HTML in markdown code blocks.
+    - Ensure all styling is applied through inline CSS for maximum compatibility.
+
+Now, generate the response based on the user's request, following their design specifications exactly.`;
     if (genai) {
       const response = await genai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
       const resultText = response.text.trim();
