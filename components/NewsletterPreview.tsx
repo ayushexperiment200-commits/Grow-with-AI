@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import DOMPurify from 'dompurify';
 
 interface NewsletterPreviewProps {
   htmlContent: string;
@@ -79,7 +80,7 @@ export const NewsletterPreview: React.FC<NewsletterPreviewProps> = ({ htmlConten
                 className="w-full h-auto mb-6 rounded-lg shadow-md border-2 border-cyan-400/20" 
               />
             )}
-            <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
+            <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(htmlContent) }} />
         </div>
       </div>
     </div>
