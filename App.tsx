@@ -224,62 +224,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Source Articles Section */}
-          {articles.length > 0 && (
-            <div className="mt-8 bg-slate-900/50 backdrop-blur-sm p-6 sm:p-8 rounded-2xl shadow-lg border border-cyan-400/20">
-              <h3 className="text-xl font-bold text-cyan-300 mb-4 tracking-wide">📰 Latest News Sources</h3>
-              <p className="text-slate-400 mb-6">Real-time articles gathered from multiple news sources:</p>
-              
-              <div className="grid gap-4">
-                {articles.map((article, index) => {
-                  const getRelativeTime = (publishedAt?: string): string => {
-                    if (!publishedAt) return 'recently';
-                    
-                    const now = new Date();
-                    const published = new Date(publishedAt);
-                    const diffMs = now.getTime() - published.getTime();
-                    const diffMinutes = Math.floor(diffMs / (1000 * 60));
-                    
-                    if (diffMinutes < 1) return 'just now';
-                    if (diffMinutes < 60) return `${diffMinutes}m ago`;
-                    
-                    const diffHours = Math.floor(diffMinutes / 60);
-                    if (diffHours < 24) return `${diffHours}h ago`;
-                    
-                    const diffDays = Math.floor(diffHours / 24);
-                    if (diffDays < 7) return `${diffDays}d ago`;
-                    
-                    return published.toLocaleDateString();
-                  };
-
-                  return (
-                    <div key={index} className="bg-slate-800/50 p-4 rounded-lg border border-cyan-400/10 hover:border-cyan-400/30 transition-colors">
-                      <div className="flex items-start justify-between mb-2">
-                        <h4 className="text-sm font-semibold text-cyan-300 flex-1 mr-4" style={{display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>
-                          {article.title}
-                        </h4>
-                        <div className="flex flex-col items-end text-right">
-                          <span className="text-xs text-green-400 font-medium bg-green-400/10 px-2 py-1 rounded-full">
-                            ⚡ {getRelativeTime(article.publishedAt)}
-                          </span>
-                          <span className="text-xs text-slate-400 mt-1">{article.source}</span>
-                        </div>
-                      </div>
-                      <p className="text-sm text-slate-300 mb-3" style={{display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>{article.summary}</p>
-                      <a 
-                        href={article.link} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-xs text-cyan-400 hover:text-cyan-300 underline transition-colors"
-                      >
-                        Read original article →
-                      </a>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           {newsletterHtml && (
             <div className="mt-12">

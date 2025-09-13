@@ -389,52 +389,23 @@ app.post('/api/image', async (req, res) => {
     const { prompt } = req.body as { prompt: string };
     if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt required' });
 
-    // Try newer Gemini 2.0 image generation first
+    // Use Google Imagen for image generation
     if (genai) {
       try {
-        const response = await genai.models.generateContent({
-          model: 'gemini-2.0-flash-preview-image-generation',
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          config: {
-            responseModalities: ['TEXT', 'IMAGE'],
-          },
+        const imagenResponse = await genai.models.generateImages({
+          model: 'imagen-3.0-generate-001',
+          prompt,
+          config: { numberOfImages: 1, outputMimeType: 'image/png', aspectRatio: '16:9' },
         });
 
-        const candidates = response.candidates;
-        if (candidates && candidates.length > 0) {
-          const content = candidates[0].content;
-          if (content && content.parts) {
-            for (const part of content.parts) {
-              if (part.inlineData && part.inlineData.data) {
-                console.log('[/api/image] Successfully generated image with Gemini 2.0');
-                return res.json({ 
-                  imageBase64: part.inlineData.data, 
-                  mimeType: part.inlineData.mimeType || 'image/png' 
-                });
-              }
-            }
-          }
+        if (imagenResponse.generatedImages && imagenResponse.generatedImages.length > 0) {
+          console.log('[/api/image] Successfully generated image with Imagen 3.0');
+          const base64ImageBytes: string = imagenResponse.generatedImages[0].image.imageBytes;
+          return res.json({ imageBase64: base64ImageBytes, mimeType: 'image/png' });
         }
-      } catch (geminiError) {
-        console.warn('[/api/image] Gemini 2.0 image generation failed, trying Imagen fallback:', geminiError.message || geminiError);
-        
-        // Try original Imagen API as secondary option
-        try {
-          const imagenResponse = await genai.models.generateImages({
-            model: 'imagen-4.0-generate-001',
-            prompt,
-            config: { numberOfImages: 1, outputMimeType: 'image/png', aspectRatio: '16:9' },
-          });
-
-          if (imagenResponse.generatedImages && imagenResponse.generatedImages.length > 0) {
-            console.log('[/api/image] Successfully generated image with Imagen 4.0');
-            const base64ImageBytes: string = imagenResponse.generatedImages[0].image.imageBytes;
-            return res.json({ imageBase64: base64ImageBytes, mimeType: 'image/png' });
-          }
-        } catch (imagenError) {
-          console.warn('[/api/image] Imagen API also failed, falling back to SVG:', imagenError.message || imagenError);
-          // Continue to fallback SVG generation
-        }
+      } catch (imagenError) {
+        console.warn('[/api/image] Imagen API failed, falling back to SVG:', imagenError.message || imagenError);
+        // Continue to fallback SVG generation
       }
     }
 
