@@ -74,15 +74,36 @@ Do not include any introductory text, closing text, or markdown formatting like 
         const response = await genai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: prompt,
-          config: { tools: [{ googleSearch: {} }] },
+          config: { 
+            tools: [{ 
+              functionDeclarations: [{
+                name: 'search_web',
+                description: 'Search the web for current news'
+              }]
+            }]
+          },
         });
 
         const rawText = response.text.trim();
-        const jsonText = rawText.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+        console.log('[/api/news] Raw AI response length:', rawText.length);
+        
+        // More robust JSON extraction
+        let jsonText = rawText;
+        if (jsonText.includes('```json')) {
+          jsonText = jsonText.replace(/^.*?```json\s*/s, '').replace(/\s*```.*$/s, '');
+        } else if (jsonText.includes('```')) {
+          jsonText = jsonText.replace(/^.*?```\s*/s, '').replace(/\s*```.*$/s, '');
+        }
+        
         const articles = JSON.parse(jsonText);
-        if (Array.isArray(articles) && articles.length) return res.json(articles);
+        if (Array.isArray(articles) && articles.length > 0) {
+          console.log('[/api/news] AI search returned', articles.length, 'articles');
+          return res.json(articles);
+        } else {
+          console.warn('[/api/news] AI returned empty or invalid articles, using RSS fallback');
+        }
       } catch (e) {
-        console.warn('AI news failed, using RSS fallback');
+        console.warn('AI news failed, using RSS fallback. Error:', e.message || e);
       }
     }
 
