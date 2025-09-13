@@ -105,22 +105,23 @@ const App: React.FC = () => {
         setLoadingMessage('Refining your newsletter...');
         const result = await refineNewsletter(newsletterHtml, articles, refinementPrompt);
         
-        const isJsonLike = result.trim().startsWith('{') && result.trim().endsWith('}');
-        if (isJsonLike) {
-            try {
-                const jsonResponse = JSON.parse(result);
-                if (jsonResponse.requestType === 'image' && jsonResponse.newImagePrompt) {
-                    setLoadingMessage('Generating new header image...');
-                    const imageBase64 = await generateHeaderImage(jsonResponse.newImagePrompt);
-                    setHeaderImageUrl(`data:image/png;base64,${imageBase64}`);
-                } else {
-                    throw new Error("AI returned an unexpected JSON format.");
-                }
-            } catch (e) {
-                console.error("Failed to parse or validate JSON from refinement:", e);
-                throw new Error("AI response was not in the expected format. Please rephrase.");
+        // Check if the result is an image request JSON (not just any JSON)
+        let isImageRequest = false;
+        try {
+            const parsed = JSON.parse(result);
+            if (parsed.requestType === 'image' && parsed.newImagePrompt) {
+                isImageRequest = true;
+                setLoadingMessage('Generating new header image...');
+                const imageDataUrl = await generateHeaderImage(parsed.newImagePrompt);
+                setHeaderImageUrl(imageDataUrl);
             }
-        } else {
+        } catch (e) {
+            // Not JSON or not a valid image request, treat as HTML content
+            isImageRequest = false;
+        }
+        
+        // If it's not an image request, treat it as HTML content
+        if (!isImageRequest) {
             setNewsletterHtml(result);
         }
 
