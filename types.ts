@@ -4,4 +4,5 @@ export interface NewsArticle {
   summary: string;
   source: string;
   link: string;
+  publishedAt?: string; // ISO date string for frontend compatibility
 }

@@ -55,50 +55,103 @@ async function validateLink(url: string): Promise<boolean> {
   }
 }
 
-async function fetchGoogleNewsRss(topics: string[], minArticles: number) {
-  const results: { title: string; summary: string; source: string; link: string }[] = [];
+async function fetchGoogleNewsRss(topics: string[], minArticles: number, freshnessMinutes: number = 180) {
+  const results: { title: string; summary: string; source: string; link: string; publishedAt: Date }[] = [];
   const seen = new Set<string>();
-  for (const topic of topics) {
-    const q = encodeURIComponent(topic);
-    const url = `https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`;
-    try {
-      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-      if (!r.ok) continue;
-      const xml = await r.text();
-      const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-      for (const item of items) {
-        const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || item.match(/<title>(.*?)<\/title>/)?.[1] || '').trim();
-        const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
-        const source = (item.match(/<source[^>]*><!\[CDATA\[(.*?)\]\]><\/source>/)?.[1] || item.match(/<source[^>]*>(.*?)<\/source>/)?.[1] || 'Unknown').trim();
-        const description = (item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '').trim();
-        const summary = stripHtml(description).slice(0, 300);
+  const now = new Date();
+  
+  // Progressive time windows: 1h -> 3h -> 12h -> no limit
+  const timeWindows = ['1h', '3h', '12h', ''];
+  
+  for (const timeWindow of timeWindows) {
+    if (results.length >= minArticles) break;
+    
+    // Parallel fetch for all topics
+    const topicPromises = topics.map(async (topic) => {
+      const topicResults: typeof results = [];
+      const q = encodeURIComponent(topic);
+      const timeQuery = timeWindow ? ` when:${timeWindow}` : '';
+      const url = `https://news.google.com/rss/search?q=${q}${encodeURIComponent(timeQuery)}&hl=en-US&gl=US&ceid=US:en&num=20`;
+      
+      try {
+        const r = await fetch(url, { 
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!r.ok) return topicResults;
         
-        // Validate the link and ensure uniqueness
-        if (title && link && !seen.has(link) && link.startsWith('http')) {
-          seen.add(link);
+        const xml = await r.text();
+        const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+        
+        for (const item of items) {
+          const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1] || item.match(/<title>(.*?)<\/title>/)?.[1] || '').trim();
+          const link = (item.match(/<link>(.*?)<\/link>/)?.[1] || '').trim();
+          const source = (item.match(/<source[^>]*><!\[CDATA\[(.*?)\]\]><\/source>/)?.[1] || item.match(/<source[^>]*>(.*?)<\/source>/)?.[1] || 'Unknown').trim();
+          const description = (item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || '').trim();
+          const summary = stripHtml(description).slice(0, 300);
           
-          // Validate first 3 links, accept others to ensure we have enough articles
-          if (results.length < 3) {
-            const isValid = await validateLink(link);
-            if (isValid) {
-              results.push({ title, summary, source, link });
-            } else {
-              console.warn(`[fetchGoogleNewsRss] Link validation failed, but adding anyway: ${link}`);
-              results.push({ title, summary, source, link });
+          // Parse publication date
+          const pubDateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
+          let publishedAt = new Date();
+          if (pubDateMatch) {
+            try {
+              publishedAt = new Date(pubDateMatch[1]);
+              if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+            } catch {
+              publishedAt = new Date();
             }
-          } else {
-            // Accept remaining links without validation for performance
-            results.push({ title, summary, source, link });
+          }
+          
+          // Check freshness
+          const ageMinutes = (now.getTime() - publishedAt.getTime()) / (1000 * 60);
+          if (ageMinutes > freshnessMinutes && timeWindow) continue;
+          
+          // Validate link and ensure uniqueness
+          if (title && link && !seen.has(link) && link.startsWith('http')) {
+            seen.add(link);
+            topicResults.push({ title, summary, source, link, publishedAt });
           }
         }
-        if (results.length >= minArticles) break;
+      } catch (error) {
+        console.warn(`[fetchGoogleNewsRss] Failed to fetch for topic "${topic}":`, error);
       }
-    } catch {
-      // ignore
+      
+      return topicResults;
+    });
+    
+    const allTopicResults = await Promise.all(topicPromises);
+    const timeWindowResults = allTopicResults.flat();
+    
+    // Sort by publication time (newest first)
+    timeWindowResults.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+    
+    // Add to results without duplicates
+    for (const article of timeWindowResults) {
+      if (!results.some(r => r.link === article.link) && results.length < minArticles * 2) {
+        results.push(article);
+      }
     }
-    if (results.length >= minArticles) break;
+    
+    console.log(`[fetchGoogleNewsRss] Time window "${timeWindow || 'unlimited'}": Found ${timeWindowResults.length} articles, total: ${results.length}`);
   }
-  return results;
+  
+  // Final sort and limit
+  results.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+  const finalResults = results.slice(0, minArticles);
+  
+  // Validate top 3 links
+  for (let i = 0; i < Math.min(3, finalResults.length); i++) {
+    try {
+      const isValid = await validateLink(finalResults[i].link);
+      if (!isValid) {
+        console.warn(`[fetchGoogleNewsRss] Link validation failed for: ${finalResults[i].link}`);
+      }
+    } catch (error) {
+      console.warn(`[fetchGoogleNewsRss] Validation error for: ${finalResults[i].link}`, error);
+    }
+  }
+  
+  return finalResults;
 }
 
 app.get('/api/health', (_req, res) => {
@@ -138,9 +191,16 @@ Focus on realistic, trending topics that would likely appear in current news.`,
       }
     }
 
-    const rss = await fetchGoogleNewsRss(topics, min);
+    const rss = await fetchGoogleNewsRss(topics, min, 180); // 3 hours freshness by default
     if (!rss.length) throw new Error('No articles available');
-    res.json(rss);
+    
+    // Convert Date objects to ISO strings for JSON serialization
+    const serializedRss = rss.map(article => ({
+      ...article,
+      publishedAt: article.publishedAt.toISOString()
+    }));
+    
+    res.json(serializedRss);
   } catch (err) {
     console.error('[/api/news] error', err);
     res.status(500).json({ error: 'Failed to fetch news' });
