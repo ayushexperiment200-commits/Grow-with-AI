@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { TopicInput } from './components/TopicInput';
 import { NewsletterPreview } from './components/NewsletterPreview';
 import { Loader } from './components/Loader';
+import { ImageGenerator } from './components/ImageGenerator';
 import { fetchTrendingNews, generateNewsletter, generateHeaderImage, refineNewsletter } from './services/geminiService';
 import type { NewsArticle } from './types';
 import { useLocalStorage } from './hooks/useLocalStorage';
@@ -48,6 +49,7 @@ const App: React.FC = () => {
   const [loadingAction, setLoadingAction] = useState<'generate' | 'refine' | null>(null);
   const [loadingMessage, setLoadingMessage] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [showImageGenerator, setShowImageGenerator] = useState<boolean>(false);
 
   const isLoading = loadingAction !== null;
 
@@ -214,6 +216,22 @@ const App: React.FC = () => {
           </div>
           {/* --- END COMMAND CENTER --- */}
 
+          {/* --- IMAGE GENERATOR SECTION --- */}
+          <div className="mt-8 bg-slate-900/50 backdrop-blur-sm p-6 sm:p-8 rounded-2xl shadow-lg border border-cyan-400/20">
+            <h2 className="text-2xl font-bold text-cyan-300 mb-2 tracking-wide">AI Image Generator</h2>
+            <p className="text-slate-400 mb-6">Generate custom images using AI. Perfect for creating unique visuals for your content.</p>
+            
+            <div className="text-center">
+              <button 
+                onClick={() => setShowImageGenerator(true)}
+                className="bg-purple-600 text-white font-bold py-3 px-8 rounded-lg shadow-lg hover:bg-purple-500 transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-900 focus:ring-purple-400"
+              >
+                🎨 GENERATE IMAGE
+              </button>
+            </div>
+          </div>
+          {/* --- END IMAGE GENERATOR SECTION --- */}
+
 
           {isLoading && <Loader message={loadingMessage} />}
           
@@ -245,6 +263,11 @@ const App: React.FC = () => {
         </div>
       </main>
       <Footer />
+      
+      {/* Image Generator Modal */}
+      {showImageGenerator && (
+        <ImageGenerator onClose={() => setShowImageGenerator(false)} />
+      )}
     </div>
   );
 };
